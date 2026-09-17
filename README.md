@@ -1,662 +1,475 @@
 # antenna-coverage-optimization
 
-## Couverture et positionnement d'antennes GSM
+## Antenna Coverage Optimization
 
-> Projet universitaire d'algorithmique avancée portant sur la modélisation et la résolution d'un problème de couverture réseau par optimisation.
+## Overview
 
-## Présentation
+This project models and solves an **antenna placement optimization problem** using **IBM ILOG CPLEX Optimization Studio and OPL**.
 
-Ce projet consiste à résoudre un problème de **positionnement d'antennes GSM** sur un territoire représenté par un ensemble de points.
+The objective is to determine which antennas should be installed, and where, in order to **cover all required points of a territory while minimizing the total installation cost**.
 
-L'objectif est de déterminer **où implanter les antennes et quels types d'antennes utiliser** afin de couvrir les points demandés tout en **minimisant le coût global d'implantation**.
+The model takes into account:
 
-Le problème prend notamment en compte :
+* possible antenna locations;
+* different antenna types;
+* antenna range and installation cost;
+* visibility between points;
+* Euclidean distances;
+* coverage constraints;
+* binary decision variables;
+* total installation cost.
 
-- les coordonnées des points du territoire ;
-- plusieurs catégories d'antennes ;
-- la portée et le coût de chaque type d'antenne ;
-- la distance entre les points ;
-- les obstacles présents sur le territoire ;
-- la visibilité entre une antenne et un point à couvrir ;
-- les contraintes d'implantation et de couverture ;
-- la faisabilité de la solution.
-
-Le problème est ensuite **modélisé sous forme d'un programme linéaire en variables booléennes** et confié à un solveur d'optimisation.
+The optimization problem is formulated in **OPL** and solved using **CPLEX**.
 
 ---
 
-## Problématique
+## Problem
 
-On dispose d'un ensemble de points représentant un territoire.
+A territory is represented by a set of points:
 
-Chaque antenne potentielle est caractérisée par :
+```text
+P = {p₁, p₂, ..., pₙ}
+```
 
-- une position ;
-- un type ;
-- une portée ;
-- un coût d'installation.
+Each point has Cartesian coordinates:
 
-Une antenne peut couvrir un point si deux conditions sont satisfaites :
+```text
+(x, y)
+```
 
-1. la distance entre l'antenne et le point est inférieure ou égale à la portée de l'antenne ;
-2. le point est visible depuis l'antenne, c'est-à-dire que le segment reliant les deux points ne traverse aucun obstacle.
+Antennas can be installed at these points.
 
-L'objectif est alors de sélectionner un ensemble d'antennes permettant de satisfaire les contraintes de couverture avec un **coût total minimal**.
+Several antenna types are available, each characterized by:
+
+* a **range** (`portee`);
+* an **installation price** (`prix`).
+
+An antenna installed at position `pa` can cover a point `p` when:
+
+1. `pa` is visible from `p`;
+2. the distance between `p` and `pa` does not exceed the antenna's range.
+
+The objective is therefore:
+
+> **Find a feasible antenna configuration covering every required point while minimizing the total installation cost.**
 
 ---
 
-## Modélisation du problème
+## Mathematical Model
 
 ### Points
 
-Le territoire est représenté par un ensemble de points :
+Points are represented using an OPL tuple:
 
-```text
-P = {p1, p2, ..., pn}
+```opl
+tuple Tpoint {
+    int x;
+    int y;
+};
+
+{Tpoint} points = ...;
 ```
 
-Chaque point possède des coordonnées permettant notamment de calculer les distances et les intersections avec les obstacles.
-
-Dans la configuration de base, les emplacements potentiels des antennes correspondent aux points du territoire.
+Each point therefore contains its coordinates.
 
 ---
 
-### Types d'antennes
+### Antenna types
 
-Chaque type d'antenne possède plusieurs caractéristiques :
+The available antenna types are represented by:
 
-```text
-Antenne
-├── portée
-└── coût
+```opl
+tuple Tantenne {
+    float portee;
+    int prix;
+};
+
+{Tantenne} antennes = ...;
 ```
 
-Par exemple :
+Each antenna type has:
 
-| Type | Portée | Coût |
-|---|---:|---:|
-| A1 | P1 | C1 |
-| A2 | P2 | C2 |
-| A3 | P3 | C3 |
-
-Les valeurs dépendent des données fournies au programme.
+| Attribute | Description            |
+| --------- | ---------------------- |
+| `portee`  | Maximum coverage range |
+| `prix`    | Installation cost      |
 
 ---
 
-## Calcul des distances
+## Visibility Matrix
 
-Une matrice de distances est pré-calculée entre les différents points :
+The model uses a visibility matrix:
 
-```text
-Distance[p1][p2]
+```opl
+int visibilite[points][points] = ...;
 ```
 
-Elle permet de déterminer rapidement si une antenne située en `pa` possède une portée suffisante pour couvrir `pb`.
-
-La condition de portée est :
+The value:
 
 ```text
-Distance(pa, pb) <= Portee[antenne]
+visibilite[p1][p2] = 1
 ```
 
-Le pré-calcul évite ainsi de recalculer les distances pendant les différentes étapes de résolution.
+indicates that `p1` and `p2` are visible to each other.
+
+This allows the model to take visibility constraints into account when determining whether an antenna can cover a point.
+
+The matrix can therefore represent restrictions such as obstacles between two locations.
 
 ---
 
-## Gestion des obstacles
+## Distance Matrix
 
-La couverture ne dépend pas uniquement de la distance.
+Distances between all pairs of points are precomputed:
 
-Le territoire peut également contenir des **obstacles représentés par des segments**.
-
-Une antenne `pa` peut couvrir un point `pb` uniquement si le segment :
-
-```text
-(pa, pb)
+```opl
+float Distances[points][points];
 ```
 
-n'intersecte aucun segment représentant un obstacle.
+The Euclidean distance is calculated with:
 
-On obtient ainsi une matrice de visibilité :
-
-```text
-Visibilite[p1][p2]
+```opl
+execute {
+    for(var p1 in points)
+        for(var p2 in points)
+            Distances[p1][p2] =
+                Opl.sqrt(
+                    (p1.x-p2.x)*(p1.x-p2.x)
+                    + (p1.y-p2.y)*(p1.y-p2.y)
+                );
+}
 ```
 
-avec une représentation conceptuelle :
+This produces a distance matrix:
 
 ```text
-Visibilite[p1][p2] = 1
+             p1      p2      p3
+        ┌────────────────────────
+p1      │   0      d12     d13
+p2      │  d21      0      d23
+p3      │  d31     d32      0
 ```
 
-si `p1` peut voir `p2`, et :
-
-```text
-Visibilite[p1][p2] = 0
-```
-
-dans le cas contraire.
-
-Cette étape introduit une composante de **géométrie algorithmique** dans le problème.
+Precomputing the distances avoids recalculating them during the optimization model.
 
 ---
 
-## Matrice de couverture
+## Decision Variables
 
-À partir des données précédentes, on peut déterminer les possibilités de couverture.
+The main decision variable is:
 
-Une ligne correspond à une antenne potentielle :
-
-```text
-(type d'antenne, position)
+```opl
+dvar boolean SELECT[antennes][points];
 ```
 
-Une colonne correspond à un point à couvrir.
-
-On définit alors une matrice de couverture :
+`SELECT[a][pa]` indicates whether an antenna of type `a` is installed at point `pa`.
 
 ```text
-C[antenne, position][point]
+SELECT[a][pa] = 1
 ```
 
-avec :
+means:
+
+> Install antenna type `a` at position `pa`.
+
+Whereas:
 
 ```text
-C[a, pa][pb] = 1
+SELECT[a][pa] = 0
 ```
 
-si l'antenne de type `a`, positionnée au point `pa`, peut couvrir le point `pb`.
+means:
 
-Elle doit satisfaire simultanément les conditions de portée et de visibilité.
+> Do not install this antenna at this position.
 
-Conceptuellement :
-
-```text
-C[a, pa][pb] =
-    1 si Distance[pa][pb] <= Portee[a]
-       et Visibilite[pa][pb] = 1
-
-    0 sinon
-```
+The optimization solver determines these values.
 
 ---
 
-# Optimisation
+## Objective Function
 
-Le problème est ensuite formulé comme un **programme linéaire en variables booléennes**.
+The objective is to minimize the total installation cost:
 
-La variable de décision principale est :
-
-```text
-SELECT[antenne][localisation]
+```opl
+minimize
+    sum(a in antennes, p in points)
+        a.prix * SELECT[a][p];
 ```
 
-Elle indique si une antenne d'un type donné est sélectionnée à une position donnée.
+The total cost is therefore:
 
 ```text
-SELECT[a][p] = 1
+Σ price(a) × SELECT(a,p)
 ```
 
-signifie :
-
-> installer une antenne de type `a` au point `p`.
-
-Inversement :
-
-```text
-SELECT[a][p] = 0
-```
-
-signifie que cette combinaison n'est pas sélectionnée.
+Only selected antennas contribute to the final cost.
 
 ---
 
-## Fonction objectif
+## Coverage Constraints
 
-Le solveur cherche à minimiser le coût total d'installation :
+Every point must be covered by at least one selected antenna.
 
-```text
-Minimiser :
+The model expresses this with:
 
-Σ coût[a] × SELECT[a][p]
+```opl
+forall(pAcouvrir in points)
+    sum(
+        a in antennes,
+        pa in points :
+            (visibilite[pAcouvrir][pa] == 1)
+            &&
+            (Distances[pAcouvrir][pa] <= a.portee)
+    )
+    SELECT[a][pa] >= 1;
 ```
 
-pour l'ensemble des types d'antennes et des positions possibles.
-
-L'objectif est donc de trouver une configuration de réseau satisfaisant les contraintes avec un coût minimal.
-
----
-
-## Contraintes de couverture
-
-Chaque point devant être couvert doit être couvert par au moins une antenne sélectionnée.
-
-La couverture d'un point dépend de la matrice `C`.
-
-Conceptuellement :
+For a point `pAcouvrir`, the model considers only antenna installations satisfying both conditions:
 
 ```text
-Pour chaque point pb :
-
-Σ C[a][pa][pb] × SELECT[a][pa] >= 1
+visibility[pAcouvrir][pa] = 1
 ```
 
-La sélection finale doit donc permettre de couvrir l'ensemble des points requis.
-
----
-
-## Contraintes supplémentaires
-
-Le modèle peut également prendre en compte différentes restrictions sur le problème :
-
-- emplacements autorisés pour les antennes ;
-- types d'antennes disponibles selon les emplacements ;
-- points devant obligatoirement être couverts ;
-- zones devant être couvertes ;
-- zones ne devant pas être couvertes ;
-- zones dans lesquelles les antennes peuvent être implantées ;
-- obstacles ;
-- contraintes géométriques.
-
-Cette modélisation permet d'adapter le problème à différents scénarios de couverture.
-
----
-
-# Architecture générale
-
-Le traitement peut être représenté de la manière suivante :
+and
 
 ```text
-                    DONNÉES D'ENTRÉE
-                           │
-                           ▼
-                ┌─────────────────────┐
-                │      Points         │
-                │  Coordonnées        │
-                └──────────┬──────────┘
-                           │
-                           ▼
-                ┌─────────────────────┐
-                │ Calcul des distances│
-                │ Distance[p1][p2]    │
-                └──────────┬──────────┘
-                           │
-                           ▼
-                ┌─────────────────────┐
-                │ Gestion des obstacles│
-                │ Visibilité[p1][p2]  │
-                └──────────┬──────────┘
-                           │
-                           ▼
-                ┌─────────────────────┐
-                │ Matrice de couverture│
-                │ C[a,pa][pb]         │
-                └──────────┬──────────┘
-                           │
-                           ▼
-                ┌─────────────────────┐
-                │ Modèle d'optimisation│
-                │ SELECT[a][p]        │
-                └──────────┬──────────┘
-                           │
-                           ▼
-                ┌─────────────────────┐
-                │       CPLEX         │
-                │ Solveur             │
-                └──────────┬──────────┘
-                           │
-                           ▼
-                    RÉSULTAT FINAL
-                           │
-             ┌─────────────┼─────────────┐
-             ▼             ▼             ▼
-        Antennes       Coût total    Faisabilité
-        sélectionnées
+distance(pAcouvrir, pa) <= antenna.range
+```
+
+At least one of these possible installations must therefore be selected.
+
+Conceptually:
+
+```text
+                  Point to cover
+                        │
+             ┌──────────┴──────────┐
+             │                     │
+        Is position visible?   Is range sufficient?
+             │                     │
+             └──────────┬──────────┘
+                        │
+                       YES
+                        │
+                        ▼
+                Candidate antenna
+                        │
+                        ▼
+                  SELECT[a][pa]
+                        │
+                        ▼
+               At least one = 1
 ```
 
 ---
 
-# Organisation du traitement
+## Optimization Process
 
-## 1. Lecture des données
-
-Le programme commence par récupérer les différentes informations nécessaires :
-
-- points du territoire ;
-- coordonnées ;
-- types d'antennes ;
-- portée ;
-- coût ;
-- contraintes ;
-- obstacles.
-
-Un format de données est défini afin de permettre leur transmission au programme d'optimisation.
-
----
-
-## 2. Pré-calcul des distances
-
-Les distances entre les différents points sont calculées et stockées dans une matrice :
+The complete optimization process can be summarized as:
 
 ```text
-Distance[p1][p2]
-```
-
-Cette structure permet de réutiliser directement les distances lors de la construction du problème de couverture.
-
----
-
-## 3. Construction de la visibilité
-
-Les obstacles sont utilisés pour déterminer les couples de points mutuellement visibles.
-
-Pour chaque paire de points :
-
-```text
-p1 → p2
-```
-
-on vérifie si le segment reliant les deux points intersecte un obstacle.
-
-Le résultat est stocké dans :
-
-```text
-Visibilite[p1][p2]
+              Input data
+                  │
+       ┌──────────┼──────────┐
+       │          │          │
+     Points    Antennas   Visibility
+       │          │          │
+       └──────────┼──────────┘
+                  │
+                  ▼
+           Distance Matrix
+                  │
+                  ▼
+        Binary Decision Variables
+             SELECT[a][p]
+                  │
+                  ▼
+             CPLEX Solver
+                  │
+        ┌─────────┴─────────┐
+        │                   │
+   Coverage constraints   Cost function
+        │                   │
+        └─────────┬─────────┘
+                  ▼
+          Optimized solution
+                  │
+                  ▼
+       Selected antenna positions
+          + total installation cost
 ```
 
 ---
 
-## 4. Construction de la couverture
+## Output
 
-Les caractéristiques des antennes sont ensuite combinées avec les matrices de distance et de visibilité.
+Once CPLEX has optimized the model, the selected antennas are displayed with their range, price and position:
 
-Pour chaque combinaison :
-
-```text
-(type d'antenne, position, point)
+```opl
+execute {
+    for(var a in antennes)
+        for(var p in points)
+            if (SELECT[a][p] == 1)
+                writeln(
+                    a.portee,
+                    " : ",
+                    p.x,
+                    "@",
+                    p.y
+                );
+}
 ```
 
-on détermine si le point peut être couvert.
-
-Le résultat constitue la matrice :
+An output can therefore look like:
 
 ```text
-C[a, pa][pb]
+2.5 : 10@15
+5.0 : 20@30
+2.5 : 35@10
+```
+
+Each line corresponds to an antenna selected by the optimizer.
+
+---
+
+## Technologies
+
+* **OPL (Optimization Programming Language)**
+* **IBM ILOG CPLEX Optimization Studio**
+* **Mixed-Integer Linear Programming (MILP)**
+* Boolean decision variables
+* Mathematical optimization
+* Matrix modeling
+* Euclidean distance
+* Combinatorial optimization
+
+---
+
+## Project Structure
+
+A possible organization of the project is:
+
+```text
+antenna-coverage-optimization/
+│
+├── README.md
+│
+├── model/
+│   └── coverage.mod
+│
+├── data/
+│   └── coverage.dat
+│
+└── examples/
+    └── example.dat
+```
+
+### `coverage.mod`
+
+Contains the optimization model:
+
+* data structures;
+* distance computation;
+* decision variables;
+* objective function;
+* coverage constraints;
+* result display.
+
+### `coverage.dat`
+
+Contains the instance data:
+
+* territory points;
+* antenna types;
+* visibility matrix.
+
+---
+
+## Example Data Model
+
+The model separates the **optimization logic** from the **input instance**.
+
+Conceptually, the data file provides:
+
+```text
+Points
+ ├── coordinates
+ │
+Antennas
+ ├── range
+ └── price
+ │
+Visibility
+ └── visibility between points
+```
+
+The OPL model then uses these data to construct and solve the optimization problem.
+
+---
+
+## Key Concept
+
+The central idea of the project is the binary matrix:
+
+```opl
+SELECT[antennes][points]
+```
+
+It represents all possible combinations of:
+
+```text
+        Antenna type
+             ×
+        Installation point
+```
+
+The solver searches for a configuration of these binary variables that satisfies the coverage constraints while minimizing the total cost.
+
+In other words:
+
+```text
+        SELECT[a][p] ∈ {0, 1}
+
+        ↓
+
+     Feasible coverage
+
+        +
+
+   Minimum installation cost
 ```
 
 ---
 
-## 5. Construction du modèle d'optimisation
+## Academic Context
 
-Les possibilités de couverture sont transformées en contraintes du programme linéaire.
+**Université de Bretagne Occidentale (UBO)**
+**Licence 3 Informatique — IFA**
+**Algorithmique avancée**
 
-Les variables booléennes `SELECT` représentent les décisions d'installation.
+Project based on the **network coverage / GSM antenna positioning** optimization problem.
 
-Le solveur doit alors déterminer :
-
-```text
-Quelles antennes installer ?
-Où les installer ?
-Quel type choisir ?
-Quel est le coût minimal ?
-La couverture demandée est-elle réalisable ?
-```
+The project focuses on the formulation of a real-world positioning problem as a mathematical optimization model and its resolution using a dedicated solver.
 
 ---
 
-## 6. Résolution
+## What This Project Demonstrates
 
-Les données sont transmises au solveur **IBM ILOG CPLEX**.
+This project demonstrates the ability to:
 
-Le solveur recherche une configuration respectant les contraintes du problème tout en minimisant le coût d'installation.
-
----
-
-## 7. Exploitation du résultat
-
-Après résolution, le programme analyse les valeurs de :
-
-```text
-SELECT[antenne][localisation]
-```
-
-afin d'identifier les antennes retenues.
-
-Le résultat permet notamment d'obtenir :
-
-- les antennes sélectionnées ;
-- leurs positions ;
-- leur type ;
-- le coût global ;
-- la faisabilité de la solution.
+* translate a real-world problem into a mathematical model;
+* structure optimization data using OPL tuples;
+* model binary decisions;
+* precompute distances;
+* represent visibility constraints using matrices;
+* formulate coverage constraints;
+* define a cost-minimization objective;
+* use **CPLEX** to search for an optimal feasible configuration;
+* separate input data from the optimization model.
 
 ---
 
-# Exemple conceptuel
+## License
 
-Supposons un territoire composé de plusieurs points :
+This project is intended for educational and portfolio purposes.
 
-```text
-P1 ─── P2 ─── P3
-│             │
-│   obstacle  │
-│             │
-P4 ─── P5 ─── P6
-```
-
-Plusieurs antennes peuvent être installées sur certains points.
-
-Pour une antenne située en `P1` :
-
-```text
-Distance(P1, P5) <= portée
-```
-
-peut être vrai.
-
-Cependant, si un obstacle coupe le segment :
-
-```text
-P1 ───────── P5
-```
-
-alors :
-
-```text
-Visibilite[P1][P5] = 0
-```
-
-et `P5` ne peut pas être couvert depuis `P1`.
-
-Le modèle d'optimisation doit donc tenir compte simultanément :
-
-```text
-distance
-    +
-visibilité
-    +
-type d'antenne
-    +
-coût
-    +
-contraintes
-```
-
----
-
-# Structures de données
-
-Le projet manipule principalement des structures permettant de représenter :
-
-### Points
-
-```text
-Point
-├── x
-└── y
-```
-
-### Antennes
-
-```text
-Antenne
-├── type
-├── portée
-└── coût
-```
-
-### Obstacles
-
-```text
-Segment
-├── point de départ
-└── point d'arrivée
-```
-
-### Matrices
-
-```text
-Distance[p1][p2]
-Visibilite[p1][p2]
-Couverture[antenne][position][point]
-```
-
-### Variables de décision
-
-```text
-SELECT[antenne][position]
-```
-
----
-
-# Aspects algorithmiques
-
-Ce projet met en œuvre plusieurs problématiques classiques d'algorithmique avancée.
-
-### Pré-calcul
-
-La matrice des distances permet de transformer des calculs répétés en accès directs à des valeurs déjà calculées.
-
-### Géométrie algorithmique
-
-La gestion des obstacles nécessite de déterminer si des segments se croisent.
-
-### Matrices
-
-Les relations entre points, antennes et possibilités de couverture sont représentées par différentes matrices.
-
-### Optimisation combinatoire
-
-Le nombre de configurations possibles augmente rapidement avec le nombre de points, d'antennes et de types disponibles.
-
-Le recours à un solveur permet d'explorer efficacement cet espace de solutions sous contraintes.
-
-### Programmation linéaire
-
-Le problème est exprimé sous forme d'un modèle mathématique composé :
-
-- de variables de décision ;
-- de contraintes ;
-- d'une fonction objectif.
-
----
-
-# Technologies et outils
-
-- **C**
-- **CPLEX**
-- **Programmation linéaire**
-- **Optimisation combinatoire**
-- **Algorithmique avancée**
-- **Matrices**
-- **Géométrie algorithmique**
-- **Structures de données**
-- **Linux / environnement Unix**
-- **Fichiers de données**
-
----
-
-# Objectifs pédagogiques
-
-Le projet permettait notamment de travailler sur :
-
-- la conception d'un format de données ;
-- la représentation de données structurées ;
-- la manipulation de matrices ;
-- le pré-calcul algorithmique ;
-- la géométrie computationnelle ;
-- la modélisation d'un problème réel ;
-- la formulation d'un programme linéaire ;
-- l'utilisation d'un solveur d'optimisation ;
-- l'interprétation des résultats d'un modèle mathématique ;
-- la gestion de contraintes ;
-- l'analyse de solutions.
-
----
-
-# Contexte universitaire
-
-**Université de Bretagne Occidentale — UBO**  
-**Licence 3 Informatique / IFA**  
-**Module : Algorithmique avancée**  
-**TP 2 : Couverture réseau**
-
-Le sujet retrouvé dans les archives correspond à l'année universitaire **2018/2019**.
-
-Le projet présenté ici reprend le problème de **couverture et positionnement d'antennes GSM** décrit dans cet enseignement.
-
----
-
-# Résultats attendus
-
-Le programme doit être capable de produire une solution permettant notamment de déterminer :
-
-```text
-+--------------------------------------+
-| Solution de couverture               |
-+--------------------------------------+
-| Antennes sélectionnées               |
-| Position des antennes                |
-| Type des antennes                    |
-| Coût global d'implantation           |
-| Faisabilité de la solution           |
-+--------------------------------------+
-```
-
-L'objectif n'est donc pas simplement de déterminer quelles antennes couvrent quels points, mais de **rechercher une configuration optimale respectant les contraintes du territoire**.
-
----
-
-# Schéma simplifié du modèle
-
-```text
-                     TERRITOIRE
-                         │
-          ┌──────────────┼──────────────┐
-          │              │              │
-          ▼              ▼              ▼
-       Points        Antennes        Obstacles
-          │              │              │
-          ▼              ▼              ▼
-      Distance       Portée/Coût    Visibilité
-          │              │              │
-          └──────────────┼──────────────┘
-                         ▼
-                Matrice de couverture
-                         │
-                         ▼
-                  Variables SELECT
-                         │
-                         ▼
-                Programme linéaire
-                         │
-                         ▼
-                       CPLEX
-                         │
-                         ▼
-                 Solution optimale
-```
-
----
-
-## Licence MIT
